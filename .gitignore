@@ -1,0 +1,7 @@
+.env
+credentials.json
+token.pickle
+__pycache__
+notas_locales
+manifest.json
+offline_cache.json
