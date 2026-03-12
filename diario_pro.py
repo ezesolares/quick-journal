@@ -27,8 +27,15 @@ parser.add_argument("--task", action="store_true", help="Save to tasks")
 args, unknown = parser.parse_known_args()
 
 # Cargar variables de entorno
-env_path = os.path.join(os.path.dirname(__file__), '.env')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(BASE_DIR, '.env')
 load_dotenv(env_path)
+
+def get_absolute_path(relative_path):
+    """Convierte una ruta relativa al proyecto en absoluta"""
+    if os.path.isabs(relative_path):
+        return relative_path
+    return os.path.join(BASE_DIR, relative_path)
 
 def get_backends(mode):
     """Factory para obtener la lista de backends configurados"""
@@ -44,7 +51,8 @@ def get_backends(mode):
                 tasks_page_id=os.getenv("TASKS_PAGE_ID")
             ))
         elif name == "local":
-            providers.append(LocalFileBackend(directory="notas_locales"))
+            dir_name = os.getenv("LOCAL_BACKEND_DIR", "notas_locales")
+            providers.append(LocalFileBackend(directory=get_absolute_path(dir_name)))
         elif name == "gkeep":
             providers.append(GoogleKeepBackend(
                 email=os.getenv("GOOGLE_KEEP_EMAIL"),
@@ -53,8 +61,10 @@ def get_backends(mode):
                 list_name=os.getenv("GOOGLE_KEEP_LIST_NAME", "InboxTareas2")
             ))
         elif name == "gtasks":
+            cred_path = os.getenv("GOOGLE_TASKS_CREDENTIALS", "credentials.json")
             providers.append(GoogleTasksBackend(
-                credentials_path=os.getenv("GOOGLE_TASKS_CREDENTIALS", "credentials.json"),
+                credentials_path=get_absolute_path(cred_path),
+                token_path=get_absolute_path("token.pickle"),
                 list_name=os.getenv("GOOGLE_TASKS_LIST_NAME", "InboxTareas2")
             ))
     return providers
@@ -71,7 +81,7 @@ else:
     UI_LABEL = "What's on your mind?"
     UI_COLOR = "#2ecc71" # Green for journal
 
-CACHE_FILE = "offline_cache.json"
+CACHE_FILE = os.path.join(BASE_DIR, "offline_cache.json")
 
 class BackendWorker(QThread):
     """Hilo para guardar datos en todos los backends configurados"""
@@ -89,20 +99,20 @@ class BackendWorker(QThread):
             self.finished.emit(False, f"Sin backends configurados para {self.mode}")
             return
         
-        errors = []
-        success_count = 0
-        for b in self.backends:
-            if b.save(self.texto, self.timestamp, self.mode):
-                success_count += 1
-            else:
-                errors.append(f"{b.__class__.__name__}: {b.get_error()}")
+        results = []
+        all_success = True
         
-        if success_count == len(self.backends):
-            self.finished.emit(True, "Guardado en todos los backends")
-        elif success_count > 0:
-            self.finished.emit(False, f"Guardado parcial ({success_count}/{len(self.backends)}). Errores: {', '.join(errors)}")
-        else:
-            self.finished.emit(False, f"Error total: {'; '.join(errors)}")
+        for b in self.backends:
+            backend_name = b.__class__.__name__.replace("Backend", "")
+            if b.save(self.texto, self.timestamp, self.mode):
+                results.append(f"✅ {backend_name}")
+            else:
+                all_success = False
+                error_msg = b.get_error()
+                results.append(f"❌ {backend_name}: {error_msg}")
+        
+        status_message = "\n".join(results)
+        self.finished.emit(all_success, status_message)
 
 class SyncWorker(QThread):
     """Hilo para sincronizar entradas offline"""
@@ -288,21 +298,19 @@ class DiarioDialog(QDialog):
         self.worker.start()
 
     def on_worker_finished(self, success, message):
+        self.lbl_status.setText(message)
+        self.lbl_status.show()
+        
         if success:
-            print(f"DEBUG: Envío exitoso ({MODE}). Cerrando...")
-            self.close()
+            self.lbl_status.setStyleSheet("color: #2ecc71; font-size: 11px;")
+            print(f"DEBUG: Envío exitoso ({MODE}). Cerrando en 2s...")
         else:
-            # Falló red o API. Guardar offline
-            texto = self.text_edit.toPlainText().strip()
-            timestamp = datetime.now().strftime('%H:%M')
-            self.save_to_cache(texto, timestamp)
-            
-            print(f"DEBUG: Error en envío: {message}. Guardado en caché.")
-            self.lbl_status.setText("Error. Guardado en caché (Offline).")
-            self.lbl_status.show()
-            
-            # Cerrar automáticamente después de 1.5 segundos
-            QTimer.singleShot(1500, self.close)
+            # Falló algo pero mostramos el detalle
+            self.lbl_status.setStyleSheet("color: #e74c3c; font-size: 11px;")
+            print(f"DEBUG: Resultados con errores: {message}")
+
+        # Cerrar automáticamente después de 2.5 segundos para que de tiempo a leer
+        QTimer.singleShot(2500, self.close)
 
     def closeEvent(self, event):
         """Asegura que el proceso termine al cerrar la ventana"""
