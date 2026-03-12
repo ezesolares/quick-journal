@@ -41,12 +41,19 @@ If you are lucky, the other way is:
 
 ---
 
+### Running from console
+
+
+- **Journal**: /home/youruser/.pyenv/versions/.venv/bin/python /home/youruser/src/project/test/opendeck-journal/diario_pro.py --journal
+- **Tasks**: /home/youruser/.pyenv/versions/.venv/bin/python /home/youruser/src/project/test/opendeck-journal/diario_pro.py --task
+
+
 ### OpenDeck Integration
 In your OpenDeck software, assign these actions to different buttons:
-- **Journal**: `pythonw diario_pro.py --journal`
-- **Tasks**: `pythonw diario_pro.py --task`
+- **Journal**: `python diario_pro.py --journal`
+- **Tasks**: `python diario_pro.py --task`
 
-(Note: `pythonw` prevents a console window from opening).
+(Note: `python` prevents a console window from opening).
 
 ## Flow and Usability
 - **Dynamic Modes**: 

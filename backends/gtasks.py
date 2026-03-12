@@ -9,9 +9,10 @@ class GoogleTasksBackend(BaseBackend):
     # If modifying these SCOPES, delete the file token.pickle.
     SCOPES = ['https://www.googleapis.com/auth/tasks']
 
-    def __init__(self, credentials_path="credentials.json", token_path="token.pickle"):
+    def __init__(self, credentials_path="credentials.json", token_path="token.pickle", list_name="InboxTareas2"):
         self.credentials_path = credentials_path
         self.token_path = token_path
+        self.list_name = list_name
         self.service = None
         self.last_error = ""
 
