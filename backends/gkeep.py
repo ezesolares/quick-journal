@@ -35,7 +35,7 @@ class GoogleKeepBackend(BaseBackend):
     def get_error(self) -> str:
         return self.last_error
 
-    def save(self, text: str, timestamp: str, mode: str) -> bool:
+    def save(self, text: str, timestamp: str, mode: str, priority: int = 9) -> bool:
         if not self._login():
             return False
             
@@ -54,7 +54,7 @@ class GoogleKeepBackend(BaseBackend):
                 lineas = [l.strip() for l in text.split('\n') if l.strip()]
                 fecha_hoy = datetime.now().strftime("%Y-%m-%d")
                 for linea in lineas:
-                    glist.add(f"{fecha_hoy} {timestamp}: {linea}", False)
+                    glist.add(f"{fecha_hoy} {timestamp}: {linea} (IMP: {priority})", False)
             else:
                 # Buscar o crear nota de diario (agrupada por año para no saturar)
                 year = datetime.now().strftime("%Y")

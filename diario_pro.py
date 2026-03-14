@@ -5,9 +5,10 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from PyQt6.QtWidgets import (QApplication, QDialog, QVBoxLayout, 
-                             QTextEdit, QPushButton, QLabel, QMessageBox)
+                             QTextEdit, QPushButton, QLabel, QMessageBox,
+                             QListWidget, QListWidgetItem, QScrollArea, QWidget, QHBoxLayout)
 import signal
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 
 import argparse
 
@@ -24,6 +25,7 @@ from PyQt6.QtGui import QShortcut, QKeySequence
 parser = argparse.ArgumentParser(description="Quick Journal and Task GUI")
 parser.add_argument("--journal", action="store_true", help="Save to journal")
 parser.add_argument("--task", action="store_true", help="Save to tasks")
+parser.add_argument("--view-tasks", action="store_true", help="View existing tasks")
 args, unknown = parser.parse_known_args()
 
 # Cargar variables de entorno
@@ -87,12 +89,13 @@ class BackendWorker(QThread):
     """Hilo para guardar datos en todos los backends configurados"""
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, backends, texto, timestamp, mode):
+    def __init__(self, backends, texto, timestamp, mode, priority=9):
         super().__init__()
         self.backends = backends
         self.texto = texto
         self.timestamp = timestamp
         self.mode = mode
+        self.priority = priority
 
     def run(self):
         if not self.backends:
@@ -104,7 +107,7 @@ class BackendWorker(QThread):
         
         for b in self.backends:
             backend_name = b.__class__.__name__.replace("Backend", "")
-            if b.save(self.texto, self.timestamp, self.mode):
+            if b.save(self.texto, self.timestamp, self.mode, self.priority):
                 results.append(f"✅ {backend_name}")
             else:
                 all_success = False
@@ -143,8 +146,11 @@ class SyncWorker(QThread):
             # Para sincronización, consideramos éxito si se guarda en AL MENOS un backend
             # o podríamos ser estrictos. Usaremos éxito si todos guardan.
             all_ok = True
+            print(f"DEBUG: Sincronizando entrada offline: {entry['texto']}")
+            # Sincronizar todos los backends
+            priority = entry.get("priority", 9)
             for b in backends:
-                if not b.save(entry["texto"], entry["timestamp"], mode):
+                if not b.save(entry["texto"], entry["timestamp"], mode, priority):
                     all_ok = False
             
             if all_ok:
@@ -155,9 +161,180 @@ class SyncWorker(QThread):
         self.finished.emit(exitos, fallos)
 
 
+class TaskViewerDialog(QDialog):
+    """Diálogo para visualizar las tareas actuales de Google Tasks"""
+    def __init__(self, all_backends):
+        super().__init__()
+        # Filtrar solo backends que pueden tener tareas (o todos, ya que manejan update_task_status)
+        self.all_backends = all_backends
+        # Usamos el primero (preferiblemente GTasks) para la carga inicial de la lista
+        self.primary_backend = next((b for b in all_backends if b.__class__.__name__ == "GoogleTasksBackend"), all_backends[0])
+        self.pending_updates = {} # id -> (title, bool)
+        self.sync_timer = QTimer()
+        self.sync_timer.setSingleShot(True)
+        self.sync_timer.timeout.connect(self.sync_pending_updates)
+        self.init_ui()
+        self.load_tasks()
+
+    def init_ui(self):
+        self.setWindowTitle("Google Tasks List")
+        self.setMinimumSize(400, 500)
+        self.setStyleSheet("""
+            QDialog { background-color: #2b2b2b; color: white; }
+            QLabel { color: #ecf0f1; font-weight: bold; font-size: 16px; margin-bottom: 10px; }
+            QListWidget { 
+                background-color: #1e1e1e; 
+                color: #ecf0f1; 
+                border: 1px solid #555; 
+                border-radius: 4px;
+                font-size: 13px;
+                outline: none;
+            }
+            QListWidget::item { padding: 10px; border-bottom: 1px solid #333; }
+            QListWidget::item:selected { background-color: #3498db; color: white; }
+            QPushButton { 
+                background-color: #3498db; 
+                color: white; 
+                padding: 10px; 
+                border-radius: 4px; 
+                font-weight: bold;
+                margin-top: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        self.label = QLabel("Tus Tareas Pendientes")
+        layout.addWidget(self.label)
+
+        self.lbl_sync_status = QLabel("")
+        self.lbl_sync_status.setStyleSheet("color: #3498db; font-size: 11px;")
+        layout.addWidget(self.lbl_sync_status)
+
+        self.list_widget = QListWidget()
+        self.list_widget.itemChanged.connect(self.on_item_changed)
+        layout.addWidget(self.list_widget)
+
+        self.btn_refresh = QPushButton("Actualizar")
+        self.btn_refresh.clicked.connect(self.load_tasks)
+        layout.addWidget(self.btn_refresh)
+
+        self.btn_close = QPushButton("Cerrar")
+        self.btn_close.clicked.connect(self.close)
+        self.btn_close.setStyleSheet("background-color: #7f8c8d;")
+        layout.addWidget(self.btn_close)
+
+        self.setLayout(layout)
+
+    def load_tasks(self):
+        # Asegurar que se guarden cambios antes de recargar
+        self.sync_pending_updates()
+        
+        self.list_widget.blockSignals(True) # Evitar disparar eventos mientras cargamos
+        self.list_widget.clear()
+        self.label.setText("Cargando tareas...")
+        
+        tasks = self.primary_backend.list_tasks()
+        
+        if not tasks:
+            if self.primary_backend.get_error():
+                QMessageBox.warning(self, "Error", f"No se pudieron cargar las tareas: {self.primary_backend.get_error()}")
+            else:
+                QListWidgetItem("No hay tareas pendientes 🎉", self.list_widget)
+        else:
+            # Ordenar: primero pendientes (needsAction), luego completadas (completed)
+            tasks.sort(key=lambda x: x['status'] == 'completed')
+            
+            for t in tasks:
+                is_completed = t['status'] == 'completed'
+                title = t['title']
+                item_text = title
+                if t['notes']:
+                    item_text += f"\n   📝 {t['notes']}"
+                
+                item = QListWidgetItem(item_text)
+                # Guardar ID y Título para sincronización multi-backend
+                item.setData(Qt.ItemDataRole.UserRole, (t['id'], title))
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if is_completed else Qt.CheckState.Unchecked)
+                
+                # Tachado si está completada
+                if is_completed:
+                    font = item.font()
+                    font.setStrikeOut(True)
+                    item.setFont(font)
+                    item.setForeground(Qt.GlobalColor.gray)
+                
+                self.list_widget.addItem(item)
+        
+        self.label.setText("Tus Tareas Pendientes")
+        self.list_widget.blockSignals(False)
+
+    def on_item_changed(self, item):
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data or not isinstance(data, tuple):
+            return
+            
+        task_id, title = data
+        completed = item.checkState() == Qt.CheckState.Checked
+        
+        # Buffer de cambios (incluyendo título para otros backends)
+        self.pending_updates[task_id] = (title, completed)
+        
+        # Feedback visual inmediato
+        font = item.font()
+        font.setStrikeOut(completed)
+        item.setFont(font)
+        item.setForeground(Qt.GlobalColor.gray if completed else Qt.GlobalColor.white)
+        
+        # Reiniciar timer de 10 segundos
+        self.lbl_sync_status.setText("Guardando cambios en 10s...")
+        self.lbl_sync_status.show()
+        self.sync_timer.start(10000)
+
+    def sync_pending_updates(self):
+        if not self.pending_updates:
+            return
+
+        self.sync_timer.stop()
+        self.lbl_sync_status.setText("Sincronizando con Google Tasks...")
+        self.lbl_sync_status.setStyleSheet("color: #f39c12; font-size: 11px;")
+        QApplication.processEvents() # Forzar actualización de UI
+
+        items_to_sync = self.pending_updates.copy()
+        self.pending_updates.clear()
+        
+        total_backends = len(self.all_backends)
+        success_ops = 0
+        total_ops = len(items_to_sync) * total_backends
+        
+        for tid, (title, done) in items_to_sync.items():
+            for b in self.all_backends:
+                if b.update_task_status(tid, title, done):
+                    success_ops += 1
+                else:
+                    print(f"Error sincronizando {b.__class__.__name__} para '{title}': {b.get_error()}")
+        
+        if success_ops == total_ops:
+            self.lbl_sync_status.setText(f"✓ Sincronizado en {total_backends} backends")
+            self.lbl_sync_status.setStyleSheet("color: #2ecc71; font-size: 11px;")
+        else:
+            self.lbl_sync_status.setText(f"⚠ Sincronización parcial ({success_ops}/{total_ops})")
+            self.lbl_sync_status.setStyleSheet("color: #e74c3c; font-size: 11px;")
+        
+        # Ocultar después de un momento
+        QTimer.singleShot(3000, self.lbl_sync_status.hide)
+
+    def closeEvent(self, event):
+        """Asegurar que se guarden cambios al cerrar"""
+        self.sync_pending_updates()
+        event.accept()
+
+
 class DiarioDialog(QDialog):
     def __init__(self):
         super().__init__()
+        self.priority = 9 
+        self.priority_buttons = {}
         self.init_ui()
         self.sincronizar_cache()
 
@@ -203,6 +380,31 @@ class DiarioDialog(QDialog):
         self.shortcut_esc = QShortcut(QKeySequence("Esc"), self)
         self.shortcut_esc.activated.connect(self.close)
 
+        # Atajos para prioridades Ctrl+1 a Ctrl+9
+        for i in range(1, 10):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
+            shortcut.activated.connect(lambda p=i: self.set_priority(p))
+
+        # Selector de prioridad para tareas
+        if MODE == "tarea":
+            priority_layout = QHBoxLayout()
+            priority_layout.setSpacing(5)
+            priority_label = QLabel("Prioridad (Ctrl+1-9):")
+            priority_label.setStyleSheet("font-size: 11px; color: #aaa;")
+            priority_layout.addWidget(priority_label)
+            
+            for i in range(1, 10):
+                btn = QPushButton(str(i))
+                btn.setFixedSize(24, 24)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda checked, p=i: self.set_priority(p))
+                priority_layout.addWidget(btn)
+                self.priority_buttons[i] = btn
+                
+            priority_layout.addStretch()
+            layout.addLayout(priority_layout)
+            self.update_priority_ui()
+
         self.btn_enviar = QPushButton(f"Guardar {MODE.capitalize()} (Ctrl+Enter)")
         self.btn_enviar.clicked.connect(self.procesar_diario)
         self.btn_enviar.setStyleSheet(f"""
@@ -231,6 +433,43 @@ class DiarioDialog(QDialog):
         self.setLayout(layout)
         self.text_edit.setFocus()
 
+        # Botón extra si es modo tarea y hay GTasks
+        if MODE == "tarea":
+            self.all_task_backends = get_backends(MODE)
+            if self.all_task_backends:
+                self.btn_view_tasks = QPushButton("Ver Tareas Existentes")
+                self.btn_view_tasks.setStyleSheet("""
+                    QPushButton { 
+                        background-color: transparent; 
+                        color: #3498db; 
+                        text-decoration: underline; 
+                        border: none;
+                        font-size: 11px;
+                        margin-top: 5px;
+                    }
+                """)
+                self.btn_view_tasks.clicked.connect(self.abrir_visor_tareas)
+                layout.addWidget(self.btn_view_tasks)
+
+    def abrir_visor_tareas(self):
+        if hasattr(self, 'all_task_backends') and self.all_task_backends:
+            viewer = TaskViewerDialog(self.all_task_backends)
+            viewer.exec()
+
+    def set_priority(self, p):
+        self.priority = p
+        self.update_priority_ui()
+
+    def update_priority_ui(self):
+        if MODE != "tarea": return
+        for i, btn in self.priority_buttons.items():
+            if i == self.priority:
+                # Color según urgencia
+                color = "#e74c3c" if i <= 3 else "#f1c40f" if i <= 6 else "#2ecc71"
+                btn.setStyleSheet(f"background-color: {color}; color: black; font-weight: bold; border-radius: 12px; border: 1px solid white;")
+            else:
+                btn.setStyleSheet("background-color: #333; color: white; border-radius: 12px;")
+
     def load_cache(self):
         if os.path.exists(CACHE_FILE):
             try:
@@ -245,7 +484,8 @@ class DiarioDialog(QDialog):
         entries.append({
             "texto": texto, 
             "timestamp": timestamp, 
-            "mode": MODE
+            "mode": MODE,
+            "priority": self.priority if MODE == "tarea" else 9
         })
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(entries, f, ensure_ascii=False, indent=2)
@@ -292,8 +532,9 @@ class DiarioDialog(QDialog):
         self.text_edit.setEnabled(False)
         self.lbl_status.hide()
         
-        # Iniciar Worker con lista de backends
-        self.worker = BackendWorker(backends, texto, timestamp, MODE)
+        timestamp = datetime.now().strftime("%H:%M")
+        
+        self.worker = BackendWorker(get_backends(MODE), texto, timestamp, MODE, self.priority)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
 
@@ -322,6 +563,17 @@ class DiarioDialog(QDialog):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
+    if args.view_tasks:
+        # Modo solo visualización de tareas
+        task_backends = get_backends("tarea")
+        if task_backends:
+            viewer = TaskViewerDialog(task_backends)
+            viewer.show()
+            sys.exit(app.exec())
+        else:
+            print("Error: No hay backends de tareas configurados.")
+            sys.exit(1)
+
     # Timer para permitir que Python procese señales (Ctrl+C) cada 500ms
     timer = QTimer()
     timer.start(500)

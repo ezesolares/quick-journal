@@ -53,6 +53,68 @@ class GoogleTasksBackend(BaseBackend):
             self.last_error = f"GTasks build error: {str(e)}"
             return None
 
+    def list_tasks(self) -> list:
+        """Retorna una lista de tareas desde Google Tasks"""
+        service = self._get_service()
+        if not service:
+            return []
+            
+        try:
+            # Buscar la lista correcta
+            tasklists = service.tasklists().list().execute().get('items', [])
+            list_id = "@default"
+            for tl in tasklists:
+                if tl['title'] == self.list_name:
+                    list_id = tl['id']
+                    break
+            
+            results = service.tasks().list(tasklist=list_id, showHidden=False).execute()
+            items = results.get('items', [])
+            
+            # Formatear para facilitar la visualización
+            tasks = []
+            for item in items:
+                tasks.append({
+                    'id': item['id'],
+                    'title': item['title'],
+                    'status': item.get('status', 'needsAction'),
+                    'notes': item.get('notes', '')
+                })
+            return tasks
+        except Exception as e:
+            self.last_error = f"GTasks List error: {str(e)}"
+            return []
+
+    def update_task_status(self, task_id: str, title: str, completed: bool) -> bool:
+        """Actualiza el estado de una tarea (completada o pendiente)"""
+        service = self._get_service()
+        if not service:
+            return False
+            
+        try:
+            # Google Tasks usa 'completed' o 'needsAction'
+            status = 'completed' if completed else 'needsAction'
+            
+            # Buscamos la lista por defecto o la configurada
+            # Para simplificar y ahorrar cuota, usamos '@default' si no guardamos el list_id
+            # pero dado que el usuario puede tener varias, lo ideal es buscarla.
+            tasklists = service.tasklists().list().execute().get('items', [])
+            list_id = "@default"
+            for tl in tasklists:
+                if tl['title'] == self.list_name:
+                    list_id = tl['id']
+                    break
+
+            # Patch para actualizar solo el estado
+            body = {'status': status}
+            # Si se marca como completada, Google a veces requiere borrar la fecha de completado si se vuelve a pendiente
+            # pero con 'status' suele bastar.
+            service.tasks().patch(tasklist=list_id, task=task_id, body=body).execute()
+            return True
+        except Exception as e:
+            self.last_error = f"GTasks Update error: {str(e)}"
+            return False
+
     def get_error(self) -> str:
         return self.last_error
 
@@ -63,28 +125,31 @@ class GoogleTasksBackend(BaseBackend):
         service = self._get_service()
         if not service:
             return False
+            return True # Google Tasks solo maneja tareas
+            
+        service = self._get_service()
+        if not service:
+            return False
             
         try:
-            # Buscar la lista correcta
-            target_list_name = self.list_name 
-            tasklists = service.tasklists().list().execute().get('items', [])
+            # Buscar lista
+            list_id = self._get_list_id(service)
+            if not list_id:
+                return False
             
-            list_id = "@default" # Fallback
-            for tl in tasklists:
-                if tl['title'] == target_list_name:
-                    list_id = tl['id']
-                    break
+            # Formatos de fecha y hora para la nota
+            fecha_hoy = datetime.datetime.now().strftime("%Y-%m-%d")
+            notes = f"IMP: {priority}\nFecha: {fecha_hoy}\nHora: {timestamp}"
             
-            # Si no existe, podrías crearla o usar @default. 
-            # Por ahora seguiremos el patrón de buscarla.
-
+            # Crear tareas (una por línea)
             lineas = [l.strip() for l in text.split('\n') if l.strip()]
             for linea in lineas:
                 task = {
-                    'title': f"{linea}",
-                    'notes': f"Anotado vía OpenDeck Journal el {timestamp}"
+                    'title': linea,
+                    'notes': notes
                 }
                 service.tasks().insert(tasklist=list_id, body=task).execute()
+            
             return True
         except Exception as e:
             self.last_error = f"GTasks Save Error: {str(e)}"

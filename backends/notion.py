@@ -43,22 +43,22 @@ class NotionBackend(BaseBackend):
             "properties": {
                 "title": { "title": [{ "text": { "content": f"{title_prefix} {fecha_hoy}" } }] }
             },
-            "children": self._format_blocks(text, timestamp, mode)
+            "children": self._format_blocks(text, timestamp, mode, 9) # Default for new page
         }
         return requests.post(url, json=payload, headers=self.get_headers(), timeout=5)
 
-    def añadir_bloques(self, page_id, text, timestamp, mode):
+    def añadir_bloques(self, page_id, text, timestamp, mode, priority=9):
         url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-        payload = { "children": self._format_blocks(text, timestamp, mode) }
+        payload = { "children": self._format_blocks(text, timestamp, mode, priority) }
         return requests.patch(url, json=payload, headers=self.get_headers(), timeout=5)
 
-    def _format_blocks(self, text, timestamp, mode):
+    def _format_blocks(self, text, timestamp, mode, priority=9):
         blocks = []
         if mode == "tarea":
             fecha_hoy = datetime.now().strftime("%Y-%m-%d")
             lineas = [l.strip() for l in text.split('\n') if l.strip()]
             for linea in lineas:
-                content = f"{fecha_hoy} - {timestamp} - {linea}"
+                content = f"{fecha_hoy} - {timestamp} - {linea} (IMP: {priority})"
                 blocks.append({
                     "object": "block",
                     "type": "to_do",
@@ -77,13 +77,13 @@ class NotionBackend(BaseBackend):
             })
         return blocks
 
-    def save(self, text: str, timestamp: str, mode: str) -> bool:
+    def save(self, text: str, timestamp: str, mode: str, priority: int = 9) -> bool:
         try:
             if mode == "tarea":
                 if not self.tasks_page_id:
                     self.last_error = "ID de tareas no configurado"
                     return False
-                res = self.añadir_bloques(self.tasks_page_id, text, timestamp, mode)
+                res = self.añadir_bloques(self.tasks_page_id, text, timestamp, mode, priority)
             else:
                 if not self.diary_parent_id:
                     self.last_error = "ID de diario no configurado"
@@ -101,4 +101,38 @@ class NotionBackend(BaseBackend):
                 return False
         except Exception as e:
             self.last_error = str(e)
+            return False
+
+    def update_task_status(self, task_id: str, title: str, completed: bool) -> bool:
+        """Busca y actualiza un bloque to_do en Notion que coincida con el título"""
+        if not self.tasks_page_id:
+            return False
+            
+        try:
+            url = f"https://api.notion.com/v1/blocks/{self.tasks_page_id}/children"
+            response = requests.get(url, headers=self.get_headers(), timeout=5)
+            if response.status_code != 200:
+                self.last_error = f"Notion List error: {response.text}"
+                return False
+                
+            blocks = response.json().get("results", [])
+            for block in blocks:
+                if block["type"] == "to_do":
+                    # Extraer el texto del bloque to_do
+                    rich_text = block["to_do"].get("rich_text", [])
+                    if not rich_text: continue
+                    
+                    block_text = "".join([t["plain_text"] for t in rich_text])
+                    if title in block_text:
+                        # Actualizar este bloque
+                        block_id = block["id"]
+                        update_url = f"https://api.notion.com/v1/blocks/{block_id}"
+                        payload = {
+                            "to_do": { "checked": completed }
+                        }
+                        requests.patch(update_url, json=payload, headers=self.get_headers(), timeout=5)
+            
+            return True
+        except Exception as e:
+            self.last_error = f"Notion Update error: {str(e)}"
             return False

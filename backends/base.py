@@ -2,13 +2,11 @@ from abc import ABC, abstractmethod
 
 class BaseBackend(ABC):
     @abstractmethod
-    def save(self, text: str, timestamp: str, mode: str) -> bool:
+    def save(self, text: str, timestamp: str, mode: str, priority: int = 9) -> bool:
         """
-        Guarda la entrada en el backend.
-        :param text: Contenido del texto.
-        :param timestamp: Marca de tiempo format HH:MM.
-        :param mode: 'diario' o 'tarea'.
-        :return: True si fue exitoso, False de lo contrario.
+        Guarda el texto en el backend.
+        mode: 'diario' o 'tarea'
+        priority: 1 (máxima) a 9 (mínima/default)
         """
         pass
 
@@ -16,3 +14,10 @@ class BaseBackend(ABC):
     def get_error(self) -> str:
         """Retorna el último mensaje de error."""
         pass
+
+    def update_task_status(self, task_id: str, title: str, completed: bool) -> bool:
+        """
+        Actualiza el estado de una tarea existente.
+        Opcional para backends que no lo soporten.
+        """
+        return True
