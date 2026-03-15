@@ -1,5 +1,6 @@
 import os.path
 import pickle
+from datetime import datetime
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -118,14 +119,20 @@ class GoogleTasksBackend(BaseBackend):
     def get_error(self) -> str:
         return self.last_error
 
-    def save(self, text: str, timestamp: str, mode: str) -> bool:
+    def _get_list_id(self, service):
+        """Helper para obtener el ID de la lista por nombre"""
+        try:
+            tasklists = service.tasklists().list().execute().get('items', [])
+            for tl in tasklists:
+                if tl['title'] == self.list_name:
+                    return tl['id']
+            return "@default"
+        except Exception:
+            return "@default"
+
+    def save(self, text: str, timestamp: str, mode: str, priority: int = 9) -> bool:
         if mode != "tarea":
             return True
-            
-        service = self._get_service()
-        if not service:
-            return False
-            return True # Google Tasks solo maneja tareas
             
         service = self._get_service()
         if not service:
@@ -134,11 +141,9 @@ class GoogleTasksBackend(BaseBackend):
         try:
             # Buscar lista
             list_id = self._get_list_id(service)
-            if not list_id:
-                return False
             
             # Formatos de fecha y hora para la nota
-            fecha_hoy = datetime.datetime.now().strftime("%Y-%m-%d")
+            fecha_hoy = datetime.now().strftime("%Y-%m-%d")
             notes = f"IMP: {priority}\nFecha: {fecha_hoy}\nHora: {timestamp}"
             
             # Crear tareas (una por línea)
